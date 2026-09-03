@@ -1,0 +1,899 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>密歇根 5 天自驾大环线旅行手账</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+  <!-- D3.js 核心库 -->
+  <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
+  <script src="https://cdn.jsdelivr.net/npm/topojson-client@3"></script>
+
+  <style>
+    :root {
+      --sea-color: #c0e6e0;        /* 柔和水彩淡青海面 */
+      --unvisited-land: #fcf8ee;   /* 未打卡：羊皮纸米白 */
+      --unvisited-hover: #f3ecdb;
+      --visited-land: #ffd6ba;     /* 已打卡：蜜桃奶油粉橘 */
+      --visited-hover: #ffbe98;
+      --state-border: #dcd1be;     /* 柔和州界 */
+      --visited-border: #f08a5d;   /* 已打卡州边界 */
+      --coral-red: #ea6451;
+      --route-orange: #d9532f;     /* 环线自驾轨迹色 */
+      --ink-brown: #3e3228;
+      --card-border: #e6dac8;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      padding: 0;
+      width: 100vw;
+      height: 100vh;
+      background-color: var(--sea-color);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", sans-serif;
+      overflow: hidden;
+      user-select: none;
+      display: flex;
+    }
+
+    #map-stage {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: 100vh;
+      cursor: grab;
+    }
+
+    #map-stage:active {
+      cursor: grabbing;
+    }
+
+    svg {
+      width: 100%;
+      height: 100%;
+    }
+
+    /* 州界样式 */
+    .state {
+      transition: fill 0.2s ease, stroke 0.2s ease;
+      cursor: pointer;
+    }
+
+    .state.visited {
+      fill: var(--visited-land);
+      stroke: var(--visited-border);
+      stroke-width: 1.4;
+    }
+
+    .state.visited:hover {
+      fill: var(--visited-hover);
+    }
+
+    .state.unvisited {
+      fill: var(--unvisited-land);
+      stroke: var(--state-border);
+      stroke-width: 0.8;
+    }
+
+    .state.unvisited:hover {
+      fill: var(--unvisited-hover);
+    }
+
+    /* 路线轨迹样式：无论如何放大，始终保持纤细精致 */
+    .route-glow {
+      fill: none;
+      stroke: #ffffff;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      opacity: 0.8;
+      vector-effect: non-scaling-stroke; /* 核心：防止被地图缩放放大！ */
+      stroke-width: 6px;
+    }
+
+    .route-main {
+      fill: none;
+      stroke: var(--route-orange);
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      stroke-dasharray: 6, 4;
+      opacity: 0.95;
+      vector-effect: non-scaling-stroke; /* 核心：防止被地图缩放放大！ */
+      stroke-width: 2.8px;
+    }
+
+    /* 屏幕绝对尺寸标记层（绝对不会随地图缩放而无限变大！） */
+    #overlay-layer {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: 100vh;
+      pointer-events: none;
+      z-index: 20;
+    }
+
+    /* 自驾行程地点标记 */
+    .pin-badge {
+      position: absolute;
+      transform: translate(-50%, -100%);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      cursor: pointer;
+      pointer-events: auto;
+      transition: transform 0.15s ease-out;
+      filter: drop-shadow(0 2px 5px rgba(62, 50, 40, 0.2));
+    }
+
+    .pin-badge:hover {
+      transform: translate(-50%, -105%) scale(1.15);
+      z-index: 100;
+    }
+
+    .pin-pill {
+      background: #ffffff;
+      border: 1.5px solid var(--coral-red);
+      border-radius: 12px;
+      padding: 2px 8px;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      white-space: nowrap;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.08);
+    }
+
+    .pin-emoji {
+      font-size: 14px;
+      line-height: 1;
+    }
+
+    .pin-name {
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--coral-red);
+    }
+
+    .pin-dot {
+      width: 6px;
+      height: 6px;
+      background: var(--coral-red);
+      border: 1.5px solid #fff;
+      border-radius: 50%;
+      margin-top: -1px;
+    }
+
+    /* 代表性景点标志 */
+    .landmark-pin {
+      position: absolute;
+      transform: translate(-50%, -50%);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      cursor: pointer;
+      pointer-events: auto;
+      opacity: 0.85;
+      transition: opacity 0.2s;
+    }
+
+    .landmark-pin .l-emoji {
+      font-size: 16px;
+      filter: drop-shadow(0 2px 4px rgba(0,0,0,0.15));
+    }
+
+    .landmark-pin .l-name {
+      font-size: 9px;
+      color: #63503f;
+      background: rgba(255, 253, 249, 0.85);
+      border: 0.8px solid var(--card-border);
+      border-radius: 4px;
+      padding: 1px 4px;
+      margin-top: 1px;
+      white-space: nowrap;
+    }
+
+    /* 州名悬浮卡片 */
+    #state-tooltip {
+      position: absolute;
+      background: rgba(62, 50, 40, 0.92);
+      color: #fff;
+      padding: 6px 14px;
+      border-radius: 20px;
+      font-size: 13px;
+      font-weight: 500;
+      pointer-events: none;
+      display: none;
+      z-index: 200;
+      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+      backdrop-filter: blur(6px);
+    }
+
+    /* 左侧手账笔记本抽屉 */
+    #notebook-drawer {
+      position: absolute;
+      top: 24px;
+      left: 24px;
+      width: 330px;
+      max-height: calc(100vh - 48px);
+      background: rgba(255, 253, 249, 0.96);
+      backdrop-filter: blur(10px);
+      border: 2px solid var(--card-border);
+      border-radius: 16px;
+      box-shadow: 0 10px 30px rgba(62, 50, 40, 0.08);
+      display: flex;
+      flex-direction: column;
+      z-index: 50;
+      overflow: hidden;
+    }
+
+    .drawer-header {
+      padding: 16px 18px 12px;
+      border-bottom: 2px dashed var(--card-border);
+      background: #faf4e8;
+    }
+
+    .drawer-header h1 {
+      margin: 0 0 4px 0;
+      font-size: 17px;
+      color: var(--ink-brown);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .badge-bar {
+      display: flex;
+      gap: 6px;
+      margin-top: 6px;
+      flex-wrap: wrap;
+    }
+
+    .stat-badge {
+      background: #ffe3d1;
+      color: #d35400;
+      padding: 3px 8px;
+      border-radius: 12px;
+      font-size: 11px;
+      font-weight: bold;
+    }
+
+    #notes-list {
+      flex: 1;
+      overflow-y: auto;
+      padding: 12px 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .day-section-title {
+      font-size: 12px;
+      font-weight: bold;
+      color: #962d00;
+      background: #ffe8d6;
+      padding: 4px 10px;
+      border-radius: 6px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-top: 4px;
+    }
+
+    .note-card {
+      background: #ffffff;
+      border: 1.5px solid var(--card-border);
+      border-radius: 10px;
+      padding: 9px 12px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .note-card:hover {
+      transform: translateY(-2px);
+      border-color: var(--coral-red);
+      box-shadow: 0 4px 12px rgba(234, 100, 81, 0.14);
+    }
+
+    .note-card h4 {
+      margin: 0 0 3px 0;
+      font-size: 13px;
+      color: var(--coral-red);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .note-card p {
+      margin: 0;
+      font-size: 11.5px;
+      color: #6d5b4d;
+      line-height: 1.4;
+    }
+
+    .note-form {
+      padding: 12px 14px;
+      border-top: 2px dashed var(--card-border);
+      background: #faf4e8;
+    }
+
+    .note-form input, .note-form textarea {
+      width: 100%;
+      padding: 7px 10px;
+      margin-bottom: 6px;
+      border: 1px solid #e0d4c0;
+      border-radius: 8px;
+      font-size: 12px;
+      font-family: inherit;
+      background: #fff;
+      color: var(--ink-brown);
+      outline: none;
+    }
+
+    .note-form textarea { resize: none; height: 38px; }
+
+    .btn-submit {
+      width: 100%;
+      background: var(--coral-red);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      padding: 8px;
+      font-size: 13px;
+      font-weight: bold;
+      cursor: pointer;
+    }
+
+    .btn-submit:hover { background: #d65543; }
+
+    /* 快捷切换栏 */
+    .view-switch-bar {
+      position: absolute;
+      top: 24px;
+      right: 24px;
+      display: flex;
+      gap: 8px;
+      z-index: 50;
+    }
+
+    .switch-btn {
+      background: rgba(255, 253, 249, 0.95);
+      border: 1.5px solid var(--card-border);
+      border-radius: 20px;
+      padding: 8px 14px;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--ink-brown);
+      cursor: pointer;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.06);
+      transition: all 0.2s;
+    }
+
+    .switch-btn:hover {
+      border-color: var(--coral-red);
+      color: var(--coral-red);
+      transform: translateY(-1px);
+    }
+
+    /* 缩放按钮 */
+    .zoom-ctrls {
+      position: absolute;
+      right: 24px;
+      bottom: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      z-index: 50;
+    }
+
+    .zoom-btn {
+      width: 44px;
+      height: 44px;
+      background: rgba(255, 253, 249, 0.95);
+      border: 2px solid var(--card-border);
+      border-radius: 12px;
+      font-size: 22px;
+      font-weight: bold;
+      color: var(--ink-brown);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+      transition: all 0.2s;
+    }
+
+    .zoom-btn:hover {
+      transform: scale(1.08);
+      border-color: var(--coral-red);
+      color: var(--coral-red);
+    }
+  </style>
+</head>
+<body>
+
+<div id="map-stage">
+  <svg id="map-svg"></svg>
+</div>
+
+<!-- 绝对尺寸 HTML 标记图层（永不异常放大膨胀！） -->
+<div id="overlay-layer"></div>
+
+<div id="state-tooltip"></div>
+
+<!-- 快捷切换 -->
+<div class="view-switch-bar">
+  <button class="switch-btn" onclick="fitUSView()">🇺🇸 全美全景</button>
+  <button class="switch-btn" onclick="fitMichiganRoute()">🌲 密歇根大环线</button>
+</div>
+
+<!-- 左侧手账本 -->
+<div id="notebook-drawer">
+  <div class="drawer-header">
+    <h1>🌲 密歇根 5 天自驾手账</h1>
+    <div class="badge-bar">
+      <span class="stat-badge">已点亮 20 州 (含TN✨)</span>
+      <span class="stat-badge" style="background: #e2f0d9; color: #38761d;">上岛大环线 🚗</span>
+    </div>
+  </div>
+
+  <div id="notes-list"></div>
+
+  <div class="note-form">
+    <input type="text" id="placeName" placeholder="📌 添加备忘点（如：Tahquamenon Falls）" />
+    <input type="text" id="placeCoords" placeholder="🗺️ 经纬度（地图上点一下自动填）" />
+    <textarea id="placeStory" placeholder="写写在这里的备忘或故事..."></textarea>
+    <button class="btn-submit" onclick="addCustomNote()">✍️ 记入这页手账</button>
+  </div>
+</div>
+
+<!-- 缩放按键 -->
+<div class="zoom-ctrls">
+  <button class="zoom-btn" onclick="zoomIn()" title="放大">+</button>
+  <button class="zoom-btn" onclick="zoomOut()" title="缩小">−</button>
+</div>
+
+<script>
+  // 1. 已打卡 20 州集合
+  const visitedStateFips = new Set([
+    "23", "33", "25", "44", "09", "36", "34", "42", "10", "24",
+    "51", "37", "45", "13", "12", "48", "17", "26", "39", "47"
+  ]);
+
+  const allStateNames = {
+    "01": "阿拉巴马州 (AL)", "02": "阿拉斯加州 (AK)", "04": "亚利桑那州 (AZ)", "05": "阿肯色州 (AR)",
+    "06": "加利福尼亚州 (CA)", "08": "科罗拉多州 (CO)", "09": "康涅狄格州 (CT)", "10": "特拉华州 (DE)",
+    "11": "华盛顿特区 (DC)", "12": "佛罗里达州 (FL)", "13": "乔治亚州 (GA)", "15": "夏威夷州 (HI)",
+    "16": "爱达荷州 (ID)", "17": "伊利诺伊州 (IL)", "18": "印第安纳州 (IN)", "19": "爱荷华州 (IA)",
+    "20": "堪萨斯州 (KS)", "21": "肯塔基州 (KY)", "22": "路易斯安那州 (LA)", "23": "缅因州 (ME)",
+    "24": "马里兰州 (MD)", "25": "马萨诸塞州 (MA)", "26": "密歇根州 (MI)", "27": "明尼苏达州 (MN)",
+    "28": "密西西比州 (MS)", "29": "密苏里州 (MO)", "30": "蒙大拿州 (MT)", "31": "内布拉斯加州 (NE)",
+    "32": "内华达州 (NV)", "33": "新罕布什尔州 (NH)", "34": "新泽西州 (NJ)", "35": "新墨西哥州 (NM)",
+    "36": "纽约州 (NY)", "37": "北卡罗来纳州 (NC)", "38": "北达科他州 (ND)", "39": "俄亥俄州 (OH)",
+    "40": "俄克拉荷马州 (OK)", "41": "俄勒冈州 (OR)", "42": "宾夕法尼亚州 (PA)", "44": "罗德岛州 (RI)",
+    "45": "南卡罗来纳州 (SC)", "46": "南达科他州 (SD)", "47": "田纳西州 (TN)", "48": "德克萨斯州 (TX)",
+    "49": "犹他州 (UT)", "50": "佛蒙特州 (VT)", "51": "弗吉尼亚州 (VA)", "53": "华盛顿州 (WA)",
+    "54": "西弗吉尼亚州 (WV)", "55": "威斯康星州 (WI)", "56": "怀俄明州 (WY)"
+  };
+
+  // 全美代表性景点
+  const stateLandmarks = [
+    { stateFips: "36", name: "自由女神像", icon: "🗽", coords: [-74.0445, 40.6892] },
+    { stateFips: "06", name: "金门大桥", icon: "🌉", coords: [-122.4783, 37.8199] },
+    { stateFips: "12", name: "神奇王国", icon: "🏰", coords: [-81.5812, 28.4177] },
+    { stateFips: "48", name: "休斯敦航天", icon: "🚀", coords: [-95.0931, 29.5593] },
+    { stateFips: "17", name: "芝加哥豆子", icon: "🫘", coords: [-87.6238, 41.8827] },
+    { stateFips: "47", name: "大烟山国家公园", icon: "⛰️", coords: [-83.5070, 35.6118] },
+    { stateFips: "37", name: "比尔特莫庄园", icon: "🏰", coords: [-82.5515, 35.5406] },
+    { stateFips: "23", name: "阿卡迪亚海湾", icon: "🦞", coords: [-68.2733, 44.3386] },
+    { stateFips: "25", name: "自由之路", icon: "📜", coords: [-71.0589, 42.3601] },
+    { stateFips: "42", name: "自由钟", icon: "🔔", coords: [-75.1498, 39.9496] },
+    { stateFips: "51", name: "谢南多厄公园", icon: "🍁", coords: [-78.3580, 38.5320] },
+    { stateFips: "13", name: "佐治亚水族馆", icon: "🐋", coords: [-84.3951, 33.7634] },
+    { stateFips: "39", name: "摇滚名人堂", icon: "🎸", coords: [-81.6954, 41.5085] },
+    { stateFips: "34", name: "大西洋城木栈道", icon: "🎡", coords: [-74.4229, 39.3643] },
+    { stateFips: "04", name: "大峡谷", icon: "🏜️", coords: [-112.1129, 36.1069] },
+    { stateFips: "56", name: "老忠实泉", icon: "🌋", coords: [-110.8281, 44.4605] },
+    { stateFips: "46", name: "总统山", icon: "🗿", coords: [-103.4538, 43.8791] },
+    { stateFips: "15", name: "威基基海滩", icon: "🌺", coords: [-157.8294, 21.2766] },
+    { stateFips: "02", name: "德纳利雪山", icon: "🏔️", coords: [-151.0064, 63.1148] }
+  ];
+
+  // 2. 密歇根 5 天自驾行程列表
+  let tripStops = [
+    // Day 1
+    {
+      id: 101, day: "Day 1", dayTitle: "Day 1：底特律 ➔ 铁山城",
+      name: "底特律机场", fullName: "底特律大都会机场 (DTW)",
+      coords: [-83.3533, 42.2124], icon: "✈️",
+      desc: "大环线起点！落地提车，出发沿 I-75 穿越下半岛一路北上。"
+    },
+    {
+      id: 102, day: "Day 1",
+      name: "麦基诺大桥", fullName: "麦基诺大桥 (Mackinac Bridge)",
+      coords: [-84.7278, 45.8174], icon: "🌉",
+      desc: "五英里跨湖悬索桥，休伦湖与密歇根湖在此交汇，密歇根上岛门户！"
+    },
+    {
+      id: 103, day: "Day 1",
+      name: "大泉水池", fullName: "大泉水池 (Kitch-iti-kipi)",
+      coords: [-86.2844, 46.0040], icon: "🌊",
+      desc: "天然淡水泉，坐手摇观光浮排，看清澈见底的翡翠绿泉水与古树沉木。"
+    },
+    {
+      id: 104, day: "Day 1",
+      name: "铁山城", fullName: "铁山城 (Iron Mountain)",
+      coords: [-88.0640, 45.8202], icon: "🏨",
+      desc: "上岛西部历史矿业小镇，第一晚落脚，准备向深处的野猪山进发。"
+    },
+
+    // Day 2
+    {
+      id: 201, day: "Day 2", dayTitle: "Day 2：铁山 ➔ 野猪山 ➔ Ontonagon",
+      name: "野猪山", fullName: "野猪山州立公园 (Porcupine Mountains)",
+      coords: [-89.9272, 46.8043], icon: "🏞️",
+      desc: "壮阔的温带雨林峡谷，登顶俯瞰标志性的云中湖 (Lake of the Clouds)。"
+    },
+    {
+      id: 202, day: "Day 2",
+      name: "奥托纳冈", fullName: "奥托纳冈 (Ontonagon)",
+      coords: [-89.3146, 46.8710], icon: "🏡",
+      desc: "苏必利尔湖畔安宁小镇，傍晚在湖滩上看大湖日落，第二晚住宿。"
+    },
+
+    // Day 3
+    {
+      id: 301, day: "Day 3", dayTitle: "Day 3：基威诺角 ➔ Marquette ➔ Munising",
+      name: "铜港角", fullName: "铜港 (Copper Harbor)",
+      coords: [-87.8895, 47.4688], icon: "⚓",
+      desc: "基威诺半岛最北端的公路天涯海角！沿 US-41 穿过森林自驾超治愈。"
+    },
+    {
+      id: 302, day: "Day 3",
+      name: "马凯特", fullName: "马凯特 (Marquette)",
+      coords: [-87.3954, 46.5436], icon: "⛵",
+      desc: "苏必利尔湖南岸最大港市，打卡巨大的百年矿石装运码头 (Ore Dock)。"
+    },
+    {
+      id: 303, day: "Day 3",
+      name: "马尼辛", fullName: "马尼辛 (Munising)",
+      coords: [-86.6511, 46.4116], icon: "🛌",
+      desc: "画岩国家湖岸门市小镇，依山傍水，第三晚在此休整。"
+    },
+
+    // Day 4
+    {
+      id: 401, day: "Day 4", dayTitle: "Day 4：Munising ➔ 麦基诺岛",
+      name: "麦基诺岛", fullName: "麦基诺岛 (Mackinac Island)",
+      coords: [-84.6189, 45.8492], icon: "🐴",
+      desc: "全岛禁止机动车！坐轮渡上岛，乘坐复古马车、骑自行车环湖，品尝著名的 Fudge。"
+    },
+
+    // Day 5
+    {
+      id: 501, day: "Day 5", dayTitle: "Day 5：返回底特律",
+      name: "还车返程", fullName: "底特律大都会机场 (DTW)",
+      coords: [-83.3533, 42.2124], icon: "🏁",
+      desc: "沿 I-75 快速公路横贯密歇根下半岛，还车返程，大环线圆满收官！"
+    }
+  ];
+
+  // 完整自驾公路轨迹
+  const michiganLoopRoute = [
+    [-83.3533, 42.2124], [-83.7430, 42.2808], [-84.5555, 42.7325],
+    [-84.6980, 43.6000], [-84.7100, 44.6600], [-84.7278, 45.8174],
+    [-84.7250, 45.8670], [-85.8000, 45.9800], [-86.2400, 45.9500],
+    [-86.2844, 46.0040], [-87.0640, 45.7450], [-88.0640, 45.8202],
+    [-88.4000, 46.1000], [-88.8000, 46.4000], [-89.6000, 46.5000],
+    [-89.9272, 46.8043], [-89.5500, 46.8200], [-89.3146, 46.8710],
+    [-88.9000, 47.0000], [-88.5700, 47.1200], [-88.4500, 47.2500],
+    [-87.8895, 47.4688], [-88.3500, 47.4000], [-88.5700, 47.1200],
+    [-87.9000, 46.6000], [-87.3954, 46.5436], [-86.9500, 46.4500],
+    [-86.6511, 46.4116], [-86.2000, 46.3500], [-85.5000, 46.2500],
+    [-84.7500, 45.9000], [-84.6189, 45.8492], [-84.7278, 45.7800],
+    [-84.5500, 45.4000], [-84.7100, 44.6600], [-84.6980, 43.6000],
+    [-83.9500, 43.4000], [-83.3533, 42.2124]
+  ];
+
+  // 3. 初始化 D3 投影与画布
+  const svg = d3.select("#map-svg");
+  let width = window.innerWidth;
+  let height = window.innerHeight;
+
+  const projection = d3.geoAlbersUsa()
+    .scale(1300)
+    .translate([width / 2, height / 2]);
+
+  const path = d3.geoPath().projection(projection);
+
+  const g = svg.append("g");
+  const statesGroup = g.append("g").attr("class", "states");
+  const routeGroup = g.append("g").attr("class", "routes");
+
+  const overlayLayer = document.getElementById("overlay-layer");
+  const tooltip = document.getElementById("state-tooltip");
+
+  // 4. 滚轮与平移（支持高达 30 倍缩放，且永远不放大图标！）
+  let currentTransform = d3.zoomIdentity;
+
+  const zoom = d3.zoom()
+    .scaleExtent([0.8, 30.0])
+    .on("zoom", (event) => {
+      currentTransform = event.transform;
+      g.attr("transform", currentTransform);
+      updateOverlayPositions(); // 核心：地图缩放时，只更新图钉的屏幕坐标，图钉自身大小锁死！
+    });
+
+  svg.call(zoom);
+
+  // 5. 加载美国地理
+  d3.json("https://cdn.jsdelivr.net/npm/us-atlas@3/states-10m.json").then(us => {
+    const states = topojson.feature(us, us.objects.states);
+
+    statesGroup.selectAll("path")
+      .data(states.features)
+      .enter().append("path")
+      .attr("d", path)
+      .attr("class", d => visitedStateFips.has(d.id) ? "state visited" : "state unvisited")
+      .on("mousemove", (event, d) => {
+        const isVisited = visitedStateFips.has(d.id);
+        const name = allStateNames[d.id] || "美国州界";
+        tooltip.innerHTML = isVisited ? `✨ <b>${name}</b> · <span style="color: #ffd6ba;">已打卡</span>` : `${name}`;
+        tooltip.style.display = "block";
+        tooltip.style.left = `${event.pageX + 14}px`;
+        tooltip.style.top = `${event.pageY + 14}px`;
+      })
+      .on("mouseleave", () => {
+        tooltip.style.display = "none";
+      });
+
+    renderRoutes();
+    createOverlayDOM();
+    renderSidebar();
+
+    // 默认对焦密歇根路线
+    fitMichiganRoute();
+  });
+
+  // 6. 渲染路线（采用矢量非缩放描边）
+  function renderRoutes() {
+    routeGroup.selectAll("*").remove();
+
+    const lineFeature = {
+      type: "Feature",
+      geometry: {
+        type: "LineString",
+        coordinates: michiganLoopRoute
+      }
+    };
+
+    routeGroup.append("path")
+      .datum(lineFeature)
+      .attr("d", path)
+      .attr("class", "route-glow");
+
+    routeGroup.append("path")
+      .datum(lineFeature)
+      .attr("d", path)
+      .attr("class", "route-main");
+  }
+
+  // 7. 核心机制：在独立的 HTML 浮层生成固定像素尺寸的徽章，避免巨型化！
+  let stopElements = [];
+  let landmarkElements = [];
+
+  function createOverlayDOM() {
+    overlayLayer.innerHTML = '';
+    stopElements = [];
+    landmarkElements = [];
+
+    // 代表性景点
+    stateLandmarks.forEach(item => {
+      const el = document.createElement('div');
+      el.className = 'landmark-pin';
+      el.innerHTML = `
+        <span class="l-emoji">${item.icon}</span>
+        <span class="l-name">${item.name}</span>
+      `;
+      el.onclick = () => flyTo(item.coords, 8.0);
+      overlayLayer.appendChild(el);
+      landmarkElements.push({ el, coords: item.coords });
+    });
+
+    // 行程打卡点
+    tripStops.forEach(item => {
+      const el = document.createElement('div');
+      el.className = 'pin-badge';
+      el.innerHTML = `
+        <div class="pin-pill">
+          <span class="pin-emoji">${item.icon}</span>
+          <span class="pin-name">${item.name}</span>
+        </div>
+        <div class="pin-dot"></div>
+      `;
+      el.onclick = () => flyTo(item.coords, 10.0);
+      overlayLayer.appendChild(el);
+      stopElements.push({ el, coords: item.coords });
+    });
+
+    updateOverlayPositions();
+  }
+
+  // 核心：把经纬度实时转换成此时此刻的屏幕实际像素坐标（不参与缩放）
+  function updateOverlayPositions() {
+    const k = currentTransform.k;
+
+    // 代表景点：深推时优雅淡出，不抢空间
+    const landmarkOpacity = Math.max(0, Math.min(0.85, (5.5 - k) / 2.5));
+    landmarkElements.forEach(item => {
+      const basePos = projection(item.coords);
+      if (!basePos) {
+        item.el.style.display = 'none';
+        return;
+      }
+      const [screenX, screenY] = currentTransform.apply(basePos);
+      item.el.style.left = `${screenX}px`;
+      item.el.style.top = `${screenY}px`;
+      item.el.style.opacity = landmarkOpacity;
+      item.el.style.display = landmarkOpacity <= 0.05 ? 'none' : 'flex';
+    });
+
+    // 行程打卡点：永远固定在精致的真实像素大小！
+    stopElements.forEach(item => {
+      const basePos = projection(item.coords);
+      if (!basePos) {
+        item.el.style.display = 'none';
+        return;
+      }
+      const [screenX, screenY] = currentTransform.apply(basePos);
+      item.el.style.left = `${screenX}px`;
+      item.el.style.top = `${screenY}px`;
+      item.el.style.display = 'flex';
+    });
+  }
+
+  // 8. 视角切换与平滑过渡
+  function fitUSView() {
+    svg.transition()
+      .duration(1000)
+      .call(
+        zoom.transform,
+        d3.zoomIdentity.translate(width * 0.08, 0).scale(1.0)
+      );
+  }
+
+  function fitMichiganRoute() {
+    const bounds = d3.geoBounds({
+      type: "Feature",
+      geometry: { type: "LineString", coordinates: michiganLoopRoute }
+    });
+
+    const p0 = projection(bounds[0]);
+    const p1 = projection(bounds[1]);
+
+    const dx = Math.abs(p1[0] - p0[0]);
+    const dy = Math.abs(p1[1] - p0[1]);
+    const cx = (p0[0] + p1[0]) / 2;
+    const cy = (p0[1] + p1[1]) / 2;
+
+    const scale = Math.min(width / dx, height / dy) * 0.50;
+    const translate = [width / 2 + 100 - scale * cx, height / 2 - scale * cy];
+
+    svg.transition()
+      .duration(1200)
+      .call(
+        zoom.transform,
+        d3.zoomIdentity.translate(translate[0], translate[1]).scale(scale)
+      );
+  }
+
+  function flyTo(coords, targetZoom = 10) {
+    const pos = projection(coords);
+    if (!pos) return;
+
+    svg.transition()
+      .duration(1000)
+      .call(
+        zoom.transform,
+        d3.zoomIdentity
+          .translate(width / 2 + 80, height / 2)
+          .scale(targetZoom)
+          .translate(-pos[0], -pos[1])
+      );
+  }
+
+  // 9. 渲染左侧手账列表
+  function renderSidebar() {
+    const list = document.getElementById('notes-list');
+    list.innerHTML = '';
+
+    let currentDayGroup = "";
+
+    tripStops.forEach(item => {
+      if (item.dayTitle && item.dayTitle !== currentDayGroup) {
+        currentDayGroup = item.dayTitle;
+        const dayTitleEl = document.createElement('div');
+        dayTitleEl.className = 'day-section-title';
+        dayTitleEl.innerHTML = `<span>📅 ${item.dayTitle}</span>`;
+        list.appendChild(dayTitleEl);
+      }
+
+      const card = document.createElement('div');
+      card.className = 'note-card';
+      card.innerHTML = `
+        <h4>${item.fullName} <span>${item.icon}</span></h4>
+        <p>${item.desc}</p>
+      `;
+      card.onclick = () => flyTo(item.coords, 10.0);
+      list.appendChild(card);
+    });
+  }
+
+  // 10. 点击地图空地拾取坐标
+  svg.on("click", function(event) {
+    const [mx, my] = d3.pointer(event, g.node());
+    const coords = projection.invert([mx, my]);
+    if (coords && !isNaN(coords[0])) {
+      document.getElementById('placeCoords').value = `${coords[1].toFixed(4)}, ${coords[0].toFixed(4)}`;
+      document.getElementById('placeName').focus();
+    }
+  });
+
+  // 11. 缩放按钮
+  function zoomIn() { svg.transition().duration(300).call(zoom.scaleBy, 1.4); }
+  function zoomOut() { svg.transition().duration(300).call(zoom.scaleBy, 0.7); }
+
+  // 12. 新增手账
+  function addCustomNote() {
+    const name = document.getElementById('placeName').value.trim();
+    const coordsStr = document.getElementById('placeCoords').value.trim();
+    const story = document.getElementById('placeStory').value.trim();
+
+    if (!name || !coordsStr) {
+      alert("请填写地点名称和经纬度！");
+      return;
+    }
+
+    const parts = coordsStr.split(',');
+    if (parts.length !== 2) {
+      alert("经纬度格式有误，请用逗号分隔，如：46.41, -86.65");
+      return;
+    }
+
+    const lat = parseFloat(parts[0]);
+    const lng = parseFloat(parts[1]);
+
+    const newStop = {
+      id: Date.now(),
+      day: "额外备忘",
+      dayTitle: "📌 自定义备忘点",
+      name: name,
+      fullName: name,
+      coords: [lng, lat],
+      icon: "📍",
+      desc: story || "密歇根旅途中的精彩记录。"
+    };
+
+    tripStops.push(newStop);
+    createOverlayDOM();
+    renderSidebar();
+    flyTo([lng, lat], 10.0);
+
+    document.getElementById('placeName').value = '';
+    document.getElementById('placeCoords').value = '';
+    document.getElementById('placeStory').value = '';
+  }
+
+  window.onresize = () => {
+    width = window.innerWidth;
+    height = window.innerHeight;
+    projection.scale(1300).translate([width / 2, height / 2]);
+    statesGroup.selectAll("path").attr("d", path);
+    renderRoutes();
+    updateOverlayPositions();
+  };
+</script>
+
+</body>
+</html>
